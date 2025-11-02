@@ -1,0 +1,681 @@
+---
+title: "Activity 2 for Biometry"
+author: "Sehasree Mohanta"
+date: "2025-10-29"
+output: word_document
+---
+
+# 1. This problem relies on the following set of variables: ethnicity, education level, race, age, sex, BMI, AHI, ESS, MMSE, adherence (for grouping), ODSI score at baseline, and ADCS-MCI caregiver score at 12 months. 
+
+# A. Create a “Table 1: Demographic and Clinical Characteristics (n=174)” 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(readxl)
+library(gtsummary)
+library(gt)
+```
+
+# Load data and dictionary
+
+```{r}
+data_raw <- read_excel("CPAP_Adherence_Data.xlsx", sheet = "in")
+dict <- read_excel("CPAPAdherence_Data_Clean_Dictionary.xlsx", sheet = "Sheet1")
+# View structure
+str(data_raw)
+```
+# Clean column names and ensure correct types based on dictionary
+```{r}
+data_raw <- read_excel("CPAP_Adherence_Data.xlsx", sheet = "in", na = c("", "NA"))
+
+df <- data_raw %>%
+  select(subject_id, ethnicity, education, race, age, sex, bmi, ahi, ess, mmse,
+         avg_daily_cpap, adherence, odsi_bl, odsi_6m, adcs_12m) %>%
+  mutate(
+    across(c(ethnicity, education, race, sex, adherence), as.factor),
+    across(c(age, bmi, ahi, ess, mmse, avg_daily_cpap, odsi_bl, odsi_6m), 
+           ~ as.numeric(as.character(.))),
+    adcs_12m = as.character(adcs_12m),
+    adcs_12m = case_when(
+      adcs_12m %in% c("1","2","3","4","5","6","7") ~ adcs_12m,
+      TRUE ~ NA_character_
+    ),
+    adcs_12m = factor(adcs_12m, levels = 1:7, ordered = FALSE),
+    education = fct_relevel(education, "<= high school", "> high school"),
+    race = fct_relevel(race, "White", "Black", "Other"),
+    adherence = fct_relevel(adherence, "Non-adherent", "Adherent")
+  ) %>%
+  filter(!is.na(adherence))
+
+cat("Final N =", nrow(df), "\n")
+```
+#Table 1: Baseline Characteristics by CPAP Adherence
+
+```{r}
+tbl <- df %>%
+  select(ethnicity, education, race, age, sex, bmi, ahi, ess, mmse, odsi_bl, adcs_12m, adherence) %>%
+  mutate(adcs_12m = factor(adcs_12m, ordered = FALSE)) %>%
+  tbl_summary(
+    by = adherence,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = all_continuous() ~ 2,
+    missing = "no"
+  ) %>%
+  add_n() %>%
+  add_difference(
+    test = list(
+      all_continuous() ~ "t.test",
+      all_categorical() ~ "smd"
+    )
+  ) %>%
+  modify_table_body(~ .x %>% dplyr::select(-any_of("p.value"))) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "t.test",
+      all_categorical() ~ "chisq.test"
+    ),
+    pvalue_fun = ~ style_pvalue(., digits = 3)
+  ) %>%
+  modify_header(
+    label = "**Characteristic**",
+    stat_0 = "**Total** (N = {N})",
+    stat_1 = "**Non-adherent** (n = {n})",
+    stat_2 = "**Adherent** (n = {n})",
+    estimate = "**Effect Size**",
+    conf.low = "**95% CI**",
+    p.value = "**p-value**"
+  ) %>%
+  modify_column_merge(
+    pattern = "{conf.low}, {conf.high}",
+    rows = !is.na(conf.low)
+  ) %>%
+  modify_spanning_header(
+    c("stat_1", "stat_2") ~ "**Adherence Group**"
+  ) %>%
+  modify_footnote(
+    all_stat_cols() ~ "Mean (SD) for continuous variables; n (%) for categorical variables",
+    estimate ~ "Standardized Mean Difference (continuous) or Cramér's V (categorical)",
+    conf.low ~ "95% Confidence Interval for effect size",
+    p.value ~ "t-test for continuous variables; χ² test for categorical variables. χ² approximation warnings due to small cell counts (e.g., ethnicity, race, adcs_12m) are expected and do not affect validity."
+  )
+
+tbl
+```
+
+#B. Choose a single characteristic with a significant p-value when comparing between adherence and non-adherent groups, and describe in 2-3 sentences what this means in plain English.
+
+Race showed a significant difference between CPAP adherence groups (p < 0.001).
+Specifically, Black participants were much more likely to be non-adherent (42%) compared to adherent (14%), while White participants were more often adherent (79%) than non-adherent (51%).
+This suggests that racial background may play an important role in CPAP adherence, possibly due to differences in access, education, trust in healthcare, or device comfort.
+
+
+#C. Choose a single characteristic with a non-significant p-value when comparing between adherence and non-adherent groups, and describe in 2-3 sentences what this means in plain English.
+
+Age did not differ significantly between adherent and non-adherent CPAP users (p = 0.899).
+On average, both groups were around 67 years old, with similar variation in ages.
+This means that being younger or older does not make someone more or less likely to stick with their CPAP treatment in this study.
+
+#In the Observation and Interview Based Diurnal Sleepiness Inventory (ODSI), each of the three items is rated on a seven-point Likert scale. The first item examines sleepiness during basic activities of daily living; the second item relates to falling asleep during periods of inactivity; and the third item asks about hours of daytime sleep. The total ODSI score ranges from 0 (no somnolence) to 24 (excessive somnolence), so a lower score is better. Test the null hypothesis that there is no difference in change from baseline to 6 months for ODSI for adherent versus non-adherent participants. Write out each step of the hypothesis test and clearly interpret your results in plain English in 2-3 sentences.
+
+
+## Hypothesis Test: Change in ODSI (Baseline to 6 Months) by Adherence
+
+```{r}
+# Load and prepare data
+df_raw <- read_excel("CPAP_Adherence_Data.xlsx", sheet = "in")
+
+df <- df_raw %>%
+  mutate(
+    odsi_bl     = as.numeric(odsi_bl),
+    odsi_6m     = as.numeric(odsi_6m),
+    adherence   = factor(adherence, levels = c("Non-adherent", "Adherent")),
+    # Change = baseline − 6 months → positive = improvement (less sleepiness)
+    odsi_change = odsi_bl - odsi_6m
+  ) %>%
+  # Keep only participants with complete ODSI data at both time points
+  filter(!is.na(odsi_bl) & !is.na(odsi_6m) & !is.na(adherence))
+
+# Final sample sizes
+n_total     <- nrow(df)
+n_nonadh    <- sum(df$adherence == "Non-adherent")
+n_adh       <- sum(df$adherence == "Adherent")
+```
+
+#Hypothesis Test: Change in ODSI Score from Baseline to 6 Months by CPAP Adherence
+The Observation and Interview Based Diurnal Sleepiness Inventory (ODSI) measures daytime sleepiness on a scale from 0 (no somnolence) to 24 (excessive somnolence), with lower scores indicating better outcomes. We tested whether adherent CPAP users experienced a greater reduction in ODSI score over 6 months compared to non-adherent users.
+
+#Step 1: State the Hypotheses
+
+Null Hypothesis ($H_0$):
+There is no difference in the mean change in ODSI score (baseline to 6 months) between adherent and non-adherent CPAP users.
+$$H_0: \mu_{\text{change, Adherent}} - \mu_{\text{change, Non-adherent}} = 0$$
+
+
+Alternative Hypothesis ($H_a$):
+There is a difference in the mean change in ODSI score between the two groups.
+$$H_a: \mu_{\text{change, Adherent}} - \mu_{\text{change, Non-adherent}} \neq 0$$
+
+
+
+#Step 2: Select the Appropriate Statistical Test
+
+Outcome variable: Change in ODSI score (continuous; positive change = improvement)
+Grouping variable: CPAP adherence (2 levels: Non-adherent, Adherent)
+Test: Welch’s two-sample t-test (does not assume equal variances)
+Significance level: $\alpha = 0.05$ (two-tailed)
+
+```{r}
+df %>%
+  select(adherence, odsi_bl, odsi_6m, odsi_change) %>%
+  tbl_summary(
+    by = adherence,
+    statistic = list(all_continuous() ~ "{mean} ({sd})"),
+    digits = all_continuous() ~ 1,
+    missing = "no"
+  ) %>%
+  modify_caption("**Table 2: ODSI Scores and Change from Baseline to 6 Months**") %>%
+  modify_footnote(
+    everything() ~ "Values are mean (SD). Change = Baseline − 6-Month score (positive = improvement). Only participants with complete ODSI data at both time points are included."
+  ) %>%
+  modify_header(
+    stat_1 ~ paste0("**Non-adherent** (n = ", n_nonadh, ")"),
+    stat_2 ~ paste0("**Adherent** (n = ", n_adh, ")")
+  )
+```
+```{r}
+# -------------------------------------------------
+# 1. Clean the three columns that matter
+df <- df_raw %>%
+  mutate(
+    odsi_bl   = as.numeric(as.character(odsi_bl)),
+    odsi_6m   = as.numeric(as.character(odsi_6m)),
+    adherence = factor(trimws(adherence),               # remove stray spaces
+                       levels = c("Non-adherent","Adherent")),
+    odsi_change = odsi_bl - odsi_6m                     # positive = improvement
+  ) %>%
+  # 2. Keep ONLY rows with complete data for the test
+  filter(!is.na(odsi_bl) & !is.na(odsi_6m) & !is.na(adherence))
+
+# 3. Verify we have enough observations
+if (nrow(df) == 0) stop("No complete ODSI pairs after cleaning!")
+cat("Complete ODSI pairs used in t-test: ", nrow(df), "\n")
+```
+
+```{r}
+# -------------------------------------------------
+# 4. Perform Welch's t-test (safe – no NA left)
+t_result <- t.test(odsi_change ~ adherence,
+                   data = df,
+                   var.equal = FALSE)
+
+# 5. Extract results (rounded for reporting)
+t_stat <- round(t_result$statistic, 3)
+df_t   <- round(t_result$parameter, 1)
+p_val  <- t_result$p.value
+
+mean_change_nonadh <- round(mean(df$odsi_change[df$adherence == "Non-adherent"]), 1)
+mean_change_adh    <- round(mean(df$odsi_change[df$adherence == "Adherent"]), 1)
+mean_diff          <- round(mean_change_adh - mean_change_nonadh, 1)
+
+# 6. Show results
+cat(sprintf("t = %.3f, df = %.1f, p = %.3f\n", t_stat, df_t, p_val))
+cat(sprintf("Non-adherent change = %.1f, Adherent change = %.1f, Diff = %.1f\n",
+            mean_change_nonadh, mean_change_adh, mean_diff))
+```
+
+# Step 3: Test Results:
+
+The p-value = 0.236 > 0.05.
+Therefore, we fail to reject the null hypothesis.
+There is insufficient evidence to conclude that the mean change in ODSI score from baseline to 6 months differs between adherent and non-adherent CPAP users.
+
+#Both adherent and non-adherent CPAP users improved their daytime wakefulness over 6 months. Adherent users reduced their ODSI score by an average of 2.9 points, while non-adherent users improved by 1.5 points — a difference of 1.4 points. This difference was not statistically significant (p = 0.236), meaning consistent CPAP use was not associated with a significantly greater improvement in daytime sleepiness compared to inconsistent use in this study.
+
+#A positive change score (e.g., +2.9) means reduced sleepiness — a better outcome (lower ODSI = less somnolence).
+
+Only participants with complete ODSI data at both time points were included.
+Welch’s t-test was used (t = –1.198, df = 55.2).
+
+#3. Based on the ODSI, a cutoff score of 6 or higher is used to identify older adults with excessive daytime sleepiness. Test the null hypothesis that the probability of excessive daytime sleepiness is the same at baseline versus at 6 months. Write out each step of the hypothesis test and clearly interpret your results in plain English in 2-3 sentences. [4 points]
+
+```{r}
+# Load data
+df_raw <- read_excel("CPAP_Adherence_Data.xlsx", sheet = "in")
+
+# Clean and create binary EDS variables (ODSI >= 6 = Yes)
+df <- df_raw %>%
+  mutate(
+    odsi_bl = as.numeric(odsi_bl),
+    odsi_6m = as.numeric(odsi_6m),
+    eds_bl  = ifelse(odsi_bl >= 6, "Yes", "No"),
+    eds_6m  = ifelse(odsi_6m >= 6, "Yes", "No")
+  ) %>%
+  # Keep only complete pairs
+  filter(!is.na(odsi_bl) & !is.na(odsi_6m))
+
+# Create 2x2 contingency table: Baseline (rows) vs 6-Month (columns)
+cont_table <- table(df$eds_bl, df$eds_6m)
+print(cont_table)
+
+# Perform McNemar's test with continuity correction
+mc_result <- mcnemar.test(cont_table, correct = TRUE)
+
+# Extract and round results
+chi_stat <- round(mc_result$statistic, 3)
+p_val    <- mc_result$p.value
+
+# Display result
+cat("McNemar's χ² = ", chi_stat, ", p =", format.pval(p_val, digits = 3), "\n")
+```
+Step 1: State the Hypotheses
+
+Null Hypothesis ($H_0$):
+The probability of excessive daytime sleepiness (ODSI ≥ 6) is the same at baseline and at 6 months.
+$$H_0: p_{\text{baseline}} = p_{\text{6 months}}$$
+
+Alternative Hypothesis ($H_a$):
+The probability differs between the two time points.
+$$H_a: p_{\text{baseline}} \neq p_{\text{6 months}}$$
+
+
+Step 2: Select the Appropriate Test
+
+Data type: Binary (Yes/No) excessive daytime sleepiness
+Study design: Paired (same participants measured twice)
+Test: McNemar’s test (for 2×2 paired categorical data)
+Significance level: $\alpha = 0.05$ (two-tailed)
+
+Step 3: Summarize the Data
+
+```{r}
+# 2x2 table: Baseline (rows) vs 6 Months (columns)
+cont_table <- table(df$eds_bl, df$eds_6m, 
+                    dnn = c("Baseline", "6 Months"))
+
+# Display table
+cont_table
+```
+
+Paired sample size: r n_paired participants had ODSI data at both time points.
+
+#Step 4: Compute the Test Statistic
+
+```{r}
+# --- STEP 4: Compute Test (FIXED & WORKING) ---
+mc_result <- mcnemar.test(cont_table, correct = TRUE)
+chi_stat <- round(mc_result$statistic, 3)
+p_val    <- mc_result$p.value
+cat("McNemar's χ² =", chi_stat, ", p =", format.pval(p_val, digits = 3), "\n")
+```
+
+#Since p = 0.00972 < 0.05,
+we reject the null hypothesis.
+
+#There was a statistically significant reduction in excessive daytime sleepiness from baseline to 6 months (p = 0.010). Specifically, 17 participants no longer had excessive sleepiness at 6 months who did at baseline, while only 6 went in the opposite direction — a meaningful improvement. This suggests that CPAP treatment over 6 months was effective in reducing the prevalence of excessive daytime sleepiness in this group.
+
+#A.
+```{r}
+# Clean MMSE: convert to numeric, handle non-numeric entries
+df <- df_raw %>%
+  mutate(mmse = as.numeric(as.character(mmse)))
+
+# Remove missing MMSE values for analysis
+df_clean <- df %>% filter(!is.na(mmse))
+
+# Summary statistics
+n_mmse    <- nrow(df_clean)
+mean_mmse <- round(mean(df_clean$mmse), 2)
+sd_mmse   <- round(sd(df_clean$mmse), 2)
+
+cat("**MMSE Summary (n =", n_mmse, ")**\n")
+cat("Mean = ", mean_mmse, "\n")
+cat("SD = ", sd_mmse, "\n")
+```
+```{r}
+cat("**MMSE Summary (n =", n_mmse, ")**\n")
+cat("Mean = ", mean_mmse, "\n")
+cat("SD = ", sd_mmse, "\n")
+```
+```{r}
+# Known sigma
+sigma <- 2.0
+z_stat <- (mean_mmse - 23) / (sigma / sqrt(n_mmse))
+p_val_z <- pnorm(z_stat)  # left-tailed
+
+cat("**Z-test Results**\n")
+cat("z = ", round(z_stat, 3), "\n")
+cat("p-value = ", format.pval(p_val_z, digits = 4), "\n")
+```
+
+```{r}
+t_result <- t.test(df_clean$mmse, mu = 23, alternative = "less")
+t_stat   <- round(t_result$statistic, 3)
+p_val_t  <- t_result$p.value
+
+cat("\n**T-test Results**\n")
+cat("t = ", t_stat, ", df = ", t_result$parameter, "\n")
+cat("p-value = ", format.pval(p_val_t, digits = 4), "\n")
+```
+# A. Known SD = 2.0
+The average MMSE score was 27.1, much higher than 23. Even if the true population had very little variation (SD = 2.0), the p-value was very high, so we cannot say this group is cognitively impaired. In simple terms: this group’s mental function is normal.
+
+#B. Unknown SD
+Using the actual spread in scores, the average was still 27.1, and the p-value was very high. There is no evidence of cognitive impairment. In plain words: these participants do not show signs of memory or thinking problems.
+
+#This problem relies on the variable representing average daily CPAP use. 
+
+#A. Mean and Standard Deviation of Average Daily CPAP Use
+
+```{r cpap-summary}
+# Ensure avg_daily_cpap is numeric
+df <- df %>%
+  mutate(avg_daily_cpap = as.numeric(as.character(avg_daily_cpap)))
+
+# Summary
+n_cpap <- sum(!is.na(df$avg_daily_cpap))
+mean_cpap <- round(mean(df$avg_daily_cpap, na.rm = TRUE), 2)
+sd_cpap <- round(sd(df$avg_daily_cpap, na.rm = TRUE), 2)
+
+cat("**Average Daily CPAP Use (n =", n_cpap, ")**\n")
+cat("Mean = ", mean_cpap, " hours\n")
+cat("Standard Deviation = ", sd_cpap, " hours\n")
+```
+
+#B. Estimated Proportion with < 3 Hours Daily Use
+```{r}
+mu <- mean_cpap
+sigma <- sd_cpap
+
+# Standardize for z-score at 3 hours
+z_3 <- (3 - mu) / sigma
+
+# Proportion below 3 hours: P(X < 3) = Φ(z)
+prop_below_3 <- pnorm(z_3)
+
+cat("**Estimated Proportion with < 3 Hours Daily Use:**\n")
+cat("z = ", round(z_3, 3), "\n")
+cat("Proportion = ", round(prop_below_3, 4), " (or ", round(prop_below_3 * 100, 1), "%)\n")
+```
+
+##C.Interpretation:
+On average, people in this study used their CPAP machine for about 4.5 hours per night, with most using it between roughly 2 and 7 hours. If this group represents the larger population, we estimate that only about 1 in 5 people (19.4%) use their CPAP for less than 3 hours per night on average. In simple terms: most people get enough nightly use, but nearly 1 in 5 may not be using it long enough to get full benefit from treatment.
+
+#6.This question relies on the Body Mass Index (BMI) variable.
+
+#A. Compute and report the mean and standard deviation for BMI.
+
+```{r bmi-summary}
+# Ensure BMI is numeric
+df <- df %>%
+  mutate(bmi = as.numeric(as.character(bmi)))
+
+# Summary
+n_bmi <- sum(!is.na(df$bmi))
+mean_bmi <- round(mean(df$bmi, na.rm = TRUE), 2)
+sd_bmi <- round(sd(df$bmi, na.rm = TRUE), 2)
+
+cat("**Body Mass Index (BMI) (n =", n_bmi, ")**\n")
+cat("Mean = ", mean_bmi, "\n")
+cat("Standard Deviation = ", sd_bmi, "\n")
+```
+
+#B.Assuming the estimates you computed represent population parameters, estimate and report the proportion of participants who are considered obese (BMI 30+).
+
+```{r}
+mu <- mean_bmi
+sigma <- sd_bmi
+
+# Standardize for z-score at BMI = 30
+z_30 <- (30 - mu) / sigma
+
+# Proportion ≥ 30 = P(X ≥ 30) = 1 - Φ(z)
+prop_obese <- 1 - pnorm(z_30)
+
+cat("**Estimated Proportion with BMI ≥ 30 (Obese):**\n")
+cat("z = ", round(z_30, 3), "\n")
+cat("Proportion = ", round(prop_obese, 4), " (or ", round(prop_obese * 100, 1), "%)\n")
+```
+
+#C.Interpretation: On average, people in this study had a BMI of 42.2, which is well into the obese range, with most having BMIs between about 35 and 49. If this group represents the larger population, we estimate that more than 95 out of every 100 people (95.4%) have a BMI of 30 or higher, meaning they are considered obese. In simple terms: nearly everyone in this study is carrying enough extra weight to be classified as obese, which can increase the risk of serious health issues like diabetes, heart disease, and sleep apnea.
+
+#7.This problem relies on the Apnea Hypopnea Index (AHI) variable. Use the SamplingScript.R Download SamplingScript.R for drawing random samples.
+
+#A. Among those who are adherent to CPAP, describe the distribution of the variable AHI with appropriate statistics and data visualizations. Then, summarize your findings in 2-3 sentences in plain language suitable for a non-statistical audience.
+
+```{r}
+# Load data
+df_raw <- read_excel("CPAP_Adherence_Data.xlsx", sheet = "in")
+
+# Clean and filter
+df <- df_raw %>%
+  mutate(
+    ahi = as.numeric(ahi),
+    adherence = factor(adherence, levels = c("Non-adherent", "Adherent"))
+  ) %>%
+  filter(!is.na(ahi), !is.na(adherence))
+
+# Split into adherent and non-adherent
+adherent <- df %>% filter(adherence == "Adherent") %>% pull(ahi)
+nonadh   <- df %>% filter(adherence == "Non-adherent") %>% pull(ahi)
+
+# Confirm sample sizes
+n_adh <- length(adherent)   # 128
+n_non <- length(nonadh)     # 46
+```
+#A. Distribution of AHI Among Adherent Participants (n = 128)
+
+```{r}
+mean_ahi_adh <- round(mean(adherent), 2)
+sd_ahi_adh   <- round(sd(adherent), 2)
+se_ahi_adh   <- round(sd_ahi_adh / sqrt(n_adh), 2)
+```
+
+#Mean AHI = r mean_ahi_adh
+Standard Deviation = r sd_ahi_adh
+Standard Error = r se_ahi_adh
+
+```{r}
+p1 <- ggplot(data.frame(AHI = adherent), aes(x = AHI)) +
+  geom_histogram(binwidth = 5, fill = "skyblue", color = "black", alpha = 0.8) +
+  geom_vline(xintercept = mean_ahi_adh, color = "red", linetype = "dashed", size = 1) +
+  labs(title = "AHI Distribution (Adherent, n=128)", x = "AHI", y = "Count") +
+  theme_minimal()
+p1
+```
+
+# Summary:
+Among people who regularly use their CPAP machine, the average number of breathing pauses per hour of sleep (AHI) is about 34.5, with most having between 15 and 55 pauses. The spread is fairly wide, meaning some have mild sleep apnea while others have severe. Overall, this group still has significant sleep apnea, even with treatment.
+
+#7B. Theoretical Sampling Distribution (n = 30, Adherent)
+
+#By the Central Limit Theorem, for n ≥ 30, the sampling distribution of the mean is approximately normal.
+
+Population Mean (μ) = r mean_ahi_adh
+Population SD (σ) = r sd_ahi_adh
+Sample Size = 30
+Standard Error (SE) = σ / √n = r round(sd_ahi_adh / sqrt(30), 2)
+
+Expected Sampling Distribution:
+
+Mean = r mean_ahi_adh
+SD (SE) = r round(sd_ahi_adh / sqrt(30), 2)
+Shape = Approximately normal
+
+```{r}
+x_seq <- seq(mean_ahi_adh - 4*(sd_ahi_adh/sqrt(30)), 
+             mean_ahi_adh + 4*(sd_ahi_adh/sqrt(30)), length = 200)
+y_norm <- dnorm(x_seq, mean = mean_ahi_adh, sd = sd_ahi_adh/sqrt(30))
+
+p2 <- ggplot(data.frame(x = x_seq, y = y_norm), aes(x, y)) +
+  geom_line(color = "blue", size = 1) +
+  geom_area(fill = "lightblue", alpha = 0.5) +
+  labs(title = "Theoretical Sampling Distribution of Mean AHI (n=30)", 
+       x = "Sample Mean AHI", y = "Density") +
+  theme_minimal()
+p2
+```
+# Summary:
+If we repeatedly took groups of 30 adherent CPAP users and calculated their average AHI, those averages would form a bell-shaped curve centered at 34.5, with most averages falling between 30 and 39. This predictable pattern happens because larger samples give more consistent results, even if individual AHI scores vary a lot.
+
+#7C. Empirical Sampling Distribution (1,000 Samples of Size 30, Adherent)
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 6, fig.height = 4)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+```
+```{r}
+# Load data
+df_raw <- read_excel("CPAP_Adherence_Data.xlsx", sheet = "in")
+
+# Create adherent_df: data frame with only adherent AHI values
+adherent_df <- df_raw %>%
+  mutate(ahi = as.numeric(ahi)) %>%
+  filter(adherence == "Adherent", !is.na(ahi)) %>%
+  select(ahi)  # Keep as data frame with column "ahi"
+
+# Confirm size
+cat("Adherent participants with AHI data: ", nrow(adherent_df), "\n")
+```
+
+```{r}
+# === FIXED & WORKING SamplingScript.R ===
+MY_DATA   <- adherent_df           # ← Data frame with column "ahi"
+VARIABLE  <- "ahi"                 # ← Column name in quotes
+SAMPLES   <- 1000
+SIZE      <- 30
+
+meanValues <- NULL
+set.seed(123)  # For reproducibility
+
+for (i in 1:SAMPLES) {
+  sampSpots <- sample(1:nrow(MY_DATA), size = SIZE, replace = TRUE)
+  thisSamp  <- MY_DATA[sampSpots, VARIABLE, drop = FALSE]
+  meanValues <- c(meanValues, mean(thisSamp$ahi))
+}
+```
+
+#i. Mean and SD of Sampling Distribution
+```{r}
+mean_samp_adh <- round(mean(meanValues), 2)
+sd_samp_adh   <- round(sd(meanValues), 2)
+```
+
+# Mean of sample means = r mean_samp_adh
+#SD of sample means = r sd_samp_adh
+
+#ii–iii. Histogram + Normal Curve
+
+```{r}
+samp_df <- data.frame(mean_ahi = meanValues)
+
+p_c <- ggplot(samp_df, aes(x = mean_ahi)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1, fill = "lightgreen", color = "black", alpha = 0.7) +
+  stat_function(fun = dnorm, 
+                args = list(mean = mean_samp_adh, sd = sd_samp_adh), 
+                color = "red", size = 1) +
+  labs(title = "Sampling Distribution of Mean AHI (n=30, 1,000 Samples)", 
+       x = "Sample Mean AHI", y = "Density") +
+  theme_minimal()
+```
+
+```{r}
+p_c
+```
+#iv. The sampling distribution is symmetric, bell-shaped, and closely matches a normal curve. The sample means cluster tightly around 34.5 with low variability.
+
+#v. The actual sampling distribution from 1,000 real samples is almost identical to the theoretical normal distribution from part (b). Both are centered at 34.5 with a standard error of about 3.8, confirming that samples of 30 give consistent average AHI values. This shows the Central Limit Theorem holds even with moderate sample sizes.
+
+#7D.Theoretical Sampling Distribution (n = 100, Non-Adherent)
+```{r}
+mean_ahi_non <- round(mean(nonadh), 2)
+sd_ahi_non   <- round(sd(nonadh), 2)
+se_100       <- round(sd_ahi_non / sqrt(100), 2)
+```
+
+#Population Mean (μ) = r mean_ahi_non
+# SD (σ) = r sd_ahi_non
+#SE (n=100) = r se_100
+
+```{r}
+x_seq2 <- seq(mean_ahi_non - 4*se_100, mean_ahi_non + 4*se_100, length = 200)
+y_norm2 <- dnorm(x_seq2, mean = mean_ahi_non, sd = se_100)
+
+p4 <- ggplot(data.frame(x = x_seq2, y = y_norm2), aes(x, y)) +
+  geom_line(color = "darkred", size = 1) +
+  geom_area(fill = "pink", alpha = 0.5) +
+  labs(title = "Theoretical Sampling Dist (n=100, Non-Adherent)", 
+       x = "Sample Mean AHI", y = "Density") +
+  theme_minimal()
+p4
+```
+#Summary: For non-adherent CPAP users, if we took many groups of 100 people and averaged their AHI, the averages would form a tight bell curve around 35.6, with nearly all averages between 33 and 38. Because the sample is so large, the average AHI is very consistent from group to group.
+
+#7E. Empirical Sampling Distribution (1,000 Samples of Size 100, Non-Adherent)
+
+```{r}
+MY_DATA2  <- data.frame(ahi = nonadh)
+SAMPLES2  <- 1000
+SIZE2     <- 100
+
+meanValues2 <- NULL
+set.seed(123)
+
+for (i in 1:SAMPLES2) {
+  sampSpots <- sample(1:nrow(MY_DATA2), size = SIZE2, replace = TRUE)
+  thisSamp  <- MY_DATA2[sampSpots, "ahi"]
+  meanValues2 <- c(meanValues2, mean(thisSamp))
+}
+
+mean_samp_non <- round(mean(meanValues2), 2)
+sd_samp_non   <- round(sd(meanValues2), 2)
+
+samp_df2 <- data.frame(mean_ahi = meanValues2)
+
+p5 <- ggplot(samp_df2, aes(x = mean_ahi)) +
+  geom_histogram(aes(y = ..density..), binwidth = 0.5, fill = "salmon", color = "black", alpha = 0.7) +
+  stat_function(fun = dnorm, args = list(mean = mean_samp_non, sd = sd_samp_non), 
+                color = "darkred", size = 1) +
+  labs(title = "Empirical Sampling Dist (n=100, 1,000 Samples)", 
+       x = "Sample Mean AHI", y = "Density") +
+  theme_minimal()
+```
+#i. Statistics:
+
+Mean = r mean_samp_non
+SD = r sd_samp_non
+
+#ii-iii. Plot:
+
+```{r}
+p5
+```
+#iv. Comparison to Normal:
+The distribution is perfectly bell-shaped, very narrow, and matches the normal curve almost exactly. Sample means cluster tightly around 35.6, with almost no spread.
+
+#v. Comparison to Part D:
+The actual sampling results are nearly identical to the theoretical prediction — both show a tight, normal curve centered at 35.6 with a standard error under 1.3. This confirms that large samples (n=100) give extremely reliable average AHI estimates.
+
+#7F. Comparison: Adherent vs Non-Adherent Sampling Distributions
+Adherent (n=30 samples):
+
+Center: ~34.5
+Spread (SE): ~3.8
+Shape: Bell-shaped, moderate spread
+
+Non-Adherent (n=100 samples):
+
+Center: ~35.6
+Spread (SE): ~1.3
+Shape: Very tight bell
+
+##Why the difference?
+
+Both groups have similar average AHI (~35), so the centers are close. But non-adherent samples are much larger (100 vs 30), so their averages are far more consistent — less wiggle room. In plain language: whether someone uses CPAP or not doesn’t change their average sleep apnea severity much, but bigger groups give much more trustworthy average numbers.
+
+
